@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Scratch AI 評測藝廊 (人機協作版)</title>
+    <title>Scratch AI 評測藝廊 (專家協作版 Pro)</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
@@ -11,19 +11,21 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
     <style>
-        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f8fafc; }
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f1f5f9; }
         .font-mono { font-family: 'JetBrains Mono', monospace; }
         .glass-card {
-            background: rgba(255, 255, 255, 0.9);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.6);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid rgba(255, 255, 255, 1);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
         }
         input[type="file"] { display: none; }
-        /* Modal 動畫 */
-        dialog[open] { animation: zoomIn 0.3s ease-out; }
+        dialog[open] { animation: zoomIn 0.25s ease-out; }
         @keyframes zoomIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
-        dialog::backdrop { background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(4px); }
+        dialog::backdrop { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); }
+        
+        /* 隱藏數字輸入框的上下箭頭 */
+        input::-webkit-outer-spin-button,
+        input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     </style>
 
     <script type="module">
@@ -52,52 +54,45 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
 
-        // --- 向度定義 (必須與 GAS Prompt 保持一致) ---
+        // --- 評分向度定義 (Core Logic) ---
         const DIMENSIONS_CONFIG = {
             "GAME": [
-                { id: "documentation", name: "程式說明文件", max: 5 },
-                { id: "mechanism", name: "遊戲機制設計", max: 10 },
-                { id: "fun", name: "遊戲趣味性", max: 20 },
-                { id: "interaction", name: "互動操作性", max: 20 },
-                { id: "creativity", name: "獨特創意性", max: 20 },
-                { id: "completeness", name: "功能完整性", max: 25 }
+                { id: "documentation", name: "說明文件", max: 15 },
+                { id: "mechanism", name: "遊戲機制", max: 10 },
+                { id: "fun", name: "趣味性", max: 20 },
+                { id: "interaction", name: "互動性", max: 20 },
+                { id: "creativity", name: "創意", max: 20 },
+                { id: "completeness", name: "完整性", max: 25 }
             ],
             "ANIMATION": [
-                { id: "narrative_plot", name: "敘事設計-劇情", max: 5 },
-                { id: "scene_planning", name: "敘事設計-場景", max: 10 },
+                { id: "narrative_plot", name: "劇情", max: 5 },
+                { id: "scene_planning", name: "場景", max: 10 },
                 { id: "program_design", name: "程式設計", max: 30 },
-                { id: "story_presentation", name: "故事呈現", max: 30 },
-                { id: "creativity", name: "創意表達", max: 25 }
+                { id: "story_presentation", name: "呈現效果", max: 30 },
+                { id: "creativity", name: "創意", max: 25 }
             ]
         };
 
         window.currentDataMap = {};
-        window.activeModalData = null;
+        window.activeModalKey = null; // 用來追蹤當前打開的視窗
 
         // --- UI Helper ---
         const setStatus = (state, msg) => {
             const statusArea = document.getElementById('statusArea');
             const statusText = document.getElementById('statusText');
             const progressBar = document.getElementById('progressBar');
-            
             statusArea.classList.remove('hidden');
             statusText.innerText = msg;
-            
-            if (state === 'loading') {
-                progressBar.style.width = '100%';
-            } else {
-                setTimeout(() => { statusArea.classList.add('hidden'); progressBar.style.width = '0%'; }, 3000);
-            }
+            if (state === 'loading') progressBar.style.width = '100%';
+            else setTimeout(() => { statusArea.classList.add('hidden'); progressBar.style.width = '0%'; }, 3000);
         };
 
         // --- 上傳邏輯 ---
         window.triggerFileUpload = () => document.getElementById('fileInput').click();
-
         window.handleFileSelect = (event) => {
             const file = event.target.files[0];
             if (file) {
                 document.getElementById('fileNameDisplay').innerText = file.name;
-                document.getElementById('fileNameDisplay').classList.add("text-indigo-600", "font-bold");
                 document.getElementById('uploadIcon').className = "fas fa-check-circle text-2xl text-green-500";
             }
         };
@@ -105,7 +100,7 @@
         window.uploadAndEvaluate = async () => {
             if (GAS_API_URL.includes("您的_GAS")) return alert("請設定 GAS URL");
             const file = document.getElementById('fileInput').files[0];
-            if (!file) return alert("請先點擊圖示選擇檔案");
+            if (!file) return alert("請先選擇檔案");
 
             setStatus('loading', '正在解析 .sb3 並呼叫 AI 評審團...');
 
@@ -128,7 +123,7 @@
                 if (result.status === "success") {
                     await set(push(ref(db, 'evaluations')), {
                         ...result,
-                        human_evaluations: {}, // 初始化人類評分物件
+                        human_evaluations: {},
                         createdAt: Date.now()
                     });
                     setStatus('done', '完成！');
@@ -141,160 +136,249 @@
             }
         };
 
-        // --- 渲染藝廊 ---
+        // --- 核心：渲染藝廊 (Gallery) ---
         onValue(query(ref(db, 'evaluations'), orderByChild('createdAt'), limitToLast(50)), (snapshot) => {
             const grid = document.getElementById('galleryGrid');
+            const currentScroll = grid.scrollTop; // 保持捲動位置
             grid.innerHTML = "";
             window.currentDataMap = {};
             const list = [];
+            
             snapshot.forEach(c => list.push({ key: c.key, ...c.val() }));
             
             list.reverse().forEach(data => {
                 window.currentDataMap[data.key] = data;
                 renderCard(data, grid);
             });
+
+            // 如果 Modal 打開中，即時更新 Modal 內容 (實現即時協作顯示)
+            if (window.activeModalKey && window.currentDataMap[window.activeModalKey]) {
+                refreshModalContent(window.activeModalKey);
+            }
         });
 
         function renderCard(data, container) {
-            // 計算人類平均分 (如果有)
-            let humanAvgDisplay = "待評分";
-            let humanCount = 0;
-            if (data.human_evaluations) {
-                const humans = Object.values(data.human_evaluations);
-                if (humans.length > 0) {
-                    const total = humans.reduce((sum, h) => sum + h.total_score, 0);
-                    humanAvgDisplay = (total / humans.length).toFixed(1);
-                    humanCount = humans.length;
+            // 1. 整理 AI 向度平均分
+            // 我們需要把 5 個 AI 的 dimensions 加總平均，才能顯示在卡片上
+            const dimsConfig = DIMENSIONS_CONFIG[data.groupType];
+            let aiDimStats = {}; // { dimId: totalScore }
+            
+            data.ai_details.forEach(agent => {
+                if (agent.dimensions) {
+                    Object.keys(agent.dimensions).forEach(k => {
+                        if (!aiDimStats[k]) aiDimStats[k] = 0;
+                        aiDimStats[k] += agent.dimensions[k].score;
+                    });
                 }
+            });
+
+            // 2. 產生向度條 HTML
+            let barsHtml = `<div class="mt-4 space-y-2 border-t border-gray-100 pt-3">`;
+            dimsConfig.forEach(dim => {
+                const totalRaw = aiDimStats[dim.id] || 0;
+                const aiAvg = totalRaw / 5; // 5位 AI 平均
+                const percent = (aiAvg / dim.max) * 100;
+                
+                // 顏色判斷
+                let colorClass = 'bg-indigo-500';
+                if (percent < 60) colorClass = 'bg-red-400';
+                else if (percent < 80) colorClass = 'bg-yellow-400';
+                else colorClass = 'bg-green-500';
+
+                barsHtml += `
+                    <div class="flex items-center text-xs">
+                        <div class="w-16 font-medium text-gray-500 truncate text-right mr-2">${dim.name}</div>
+                        <div class="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                            <div class="${colorClass} h-1.5 rounded-full" style="width: ${percent}%"></div>
+                        </div>
+                        <div class="w-8 text-right font-mono text-gray-700">${aiAvg.toFixed(0)}</div>
+                    </div>
+                `;
+            });
+            barsHtml += `</div>`;
+
+            // 3. 人類專家資訊
+            let humanInfo = `<span class="text-gray-400 text-xs">無專家評分</span>`;
+            if (data.human_evaluations && Object.keys(data.human_evaluations).length > 0) {
+                const count = Object.keys(data.human_evaluations).length;
+                humanInfo = `<span class="text-indigo-600 text-xs font-bold"><i class="fas fa-users mr-1"></i>${count} 位專家已評</span>`;
             }
 
             const card = document.createElement('div');
-            card.className = "glass-card rounded-2xl p-5 cursor-pointer hover:shadow-xl transition transform hover:-translate-y-1 group relative overflow-hidden";
+            card.className = "glass-card rounded-2xl p-5 cursor-pointer hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 group relative overflow-hidden bg-white";
             card.onclick = () => openModal(data.key);
+            
             card.innerHTML = `
-                <div class="absolute top-0 right-0 p-3 opacity-10"><i class="fab fa-scratch text-6xl text-indigo-500"></i></div>
-                <div class="relative z-10">
-                    <div class="flex justify-between items-start mb-3">
-                        <span class="bg-indigo-100 text-indigo-700 text-xs font-bold px-2 py-1 rounded">${data.groupType === 'GAME' ? '遊戲' : '動畫'}</span>
-                        <span class="text-xs text-gray-400">${new Date(data.createdAt).toLocaleDateString()}</span>
-                    </div>
-                    <h3 class="text-lg font-bold text-gray-800 mb-4 truncate">${data.fileName}</h3>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <div class="text-xs text-gray-500">AI 平均 (${data.ai_std_dev.toFixed(1)})</div>
-                            <div class="text-3xl font-extrabold text-indigo-600">${data.ai_average.toFixed(1)}</div>
-                        </div>
-                        <div class="text-right border-l pl-4 border-gray-200">
-                            <div class="text-xs text-gray-500">專家平均 (${humanCount}人)</div>
-                            <div class="text-3xl font-bold text-gray-700">${humanAvgDisplay}</div>
-                        </div>
-                    </div>
-                </div>`;
+                <div class="flex justify-between items-start mb-2">
+                    <span class="bg-slate-100 text-slate-600 text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider border border-slate-200">${data.groupType}</span>
+                    <span class="text-[10px] text-gray-400">${new Date(data.createdAt).toLocaleDateString()}</span>
+                </div>
+                
+                <h3 class="text-base font-bold text-gray-800 mb-1 leading-tight line-clamp-2 h-10">${data.fileName}</h3>
+                
+                <div class="flex items-baseline gap-2 mb-2">
+                    <span class="text-3xl font-extrabold text-slate-800">${data.ai_average.toFixed(0)}</span>
+                    <span class="text-xs text-gray-500">AI 總分</span>
+                    <div class="ml-auto">${humanInfo}</div>
+                </div>
+
+                ${barsHtml}
+            `;
             container.appendChild(card);
         }
 
         // --- Modal 邏輯 ---
         window.openModal = (key) => {
+            window.activeModalKey = key;
             const data = window.currentDataMap[key];
-            window.activeModalData = data;
             
             document.getElementById('modalTitle').innerText = data.fileName;
             document.getElementById('modalKey').value = key;
-
-            // 渲染左側選單：AI + Human
+            
+            // 渲染左側 Sidebar
             renderSidebar(data);
             
-            // 預設開啟 Summary
+            // 預設開啟 Summary 分頁
+            // 注意：我們不希望每次重整都跳回 Summary，所以這裡可以做個判斷
+            // 但為了簡單，先預設 Summary
             switchTab('summary');
+            
             document.getElementById('detailModal').showModal();
         };
 
+        window.closeModal = () => {
+            window.activeModalKey = null;
+            document.getElementById('detailModal').close();
+        };
+
+        // 重新整理 Modal 內容 (當 Firebase 數據更新時)
+        function refreshModalContent(key) {
+            const data = window.currentDataMap[key];
+            renderSidebar(data); // 更新左側選單分數
+            
+            // 刷新當前打開的 Tab 內容
+            const activeTabBtn = document.querySelector('#modalNav button.bg-indigo-50');
+            if (activeTabBtn) {
+                const tabId = activeTabBtn.id.replace('btn-', '');
+                // 重新呼叫 switchTab 渲染內容，但不改變選單樣式
+                switchTab(tabId, false); 
+            }
+        }
+
         function renderSidebar(data) {
             const nav = document.getElementById('modalNav');
+            const currentActiveId = document.querySelector('#modalNav button.bg-indigo-50')?.id;
+
             let html = `
-                <label class="block text-xs font-bold text-gray-400 uppercase mb-2 mt-4">AI 評審團</label>
-                <button onclick="switchTab('summary')" id="btn-summary" class="w-full text-left px-4 py-3 rounded-lg text-gray-600 hover:bg-gray-100 mb-1 font-bold"><i class="fas fa-chart-pie mr-2"></i>綜合分析</button>
+                <div class="mb-6">
+                    <div class="text-xs font-bold text-gray-400 uppercase mb-2 tracking-wider">AI Analysis</div>
+                    <button onclick="switchTab('summary')" id="btn-summary" class="nav-btn w-full text-left px-4 py-2.5 rounded-lg text-gray-600 hover:bg-gray-100 mb-1 text-sm font-medium transition"><i class="fas fa-chart-pie mr-3 text-indigo-400"></i>綜合分析</button>
             `;
             
             data.ai_details.forEach((agent, i) => {
-                html += `<button onclick="switchTab('ai-${i}')" id="btn-ai-${i}" class="w-full text-left px-4 py-2 rounded-lg text-gray-500 hover:bg-gray-100 text-sm"><i class="fas fa-robot mr-2"></i>AI #${i+1} (${agent.total_score})</button>`;
+                html += `<button onclick="switchTab('ai-${i}')" id="btn-ai-${i}" class="nav-btn w-full text-left px-4 py-2 rounded-lg text-gray-500 hover:bg-gray-100 text-sm mb-1 transition flex justify-between"><span><i class="fas fa-robot mr-3 text-gray-400"></i>AI #${i+1}</span> <span class="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">${agent.total_score}</span></button>`;
             });
 
-            html += `<label class="block text-xs font-bold text-gray-400 uppercase mb-2 mt-6 flex justify-between items-center">
-                        人類專家團 
-                        <button onclick="addNewExpert()" class="text-indigo-600 hover:text-indigo-800"><i class="fas fa-plus-circle"></i> 新增</button>
-                     </label>`;
+            html += `</div>
+                     <div class="mb-2 flex justify-between items-center">
+                        <div class="text-xs font-bold text-gray-400 uppercase tracking-wider">Human Experts</div>
+                        <button onclick="addNewExpert()" class="text-xs bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-2 py-1 rounded transition font-bold"><i class="fas fa-plus"></i> 新增</button>
+                     </div>
+                     <div class="space-y-1">`;
             
             if (data.human_evaluations) {
                 Object.entries(data.human_evaluations).forEach(([id, expert]) => {
-                    html += `<button onclick="switchTab('human-${id}')" id="btn-human-${id}" class="w-full text-left px-4 py-2 rounded-lg text-gray-500 hover:bg-gray-100 text-sm flex justify-between">
-                                <span><i class="fas fa-user-tie mr-2"></i>${expert.name}</span>
-                                <span class="font-bold">${expert.total_score}</span>
+                    html += `<button onclick="switchTab('human-${id}')" id="btn-human-${id}" class="nav-btn w-full text-left px-4 py-2.5 rounded-lg text-gray-600 hover:bg-gray-100 text-sm flex justify-between items-center transition group">
+                                <span class="truncate max-w-[120px]"><i class="fas fa-user-tie mr-3 text-emerald-500"></i>${expert.name}</span>
+                                <span class="font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded text-xs">${expert.total_score || 0}</span>
                              </button>`;
                 });
             } else {
-                html += `<div class="text-xs text-gray-400 px-4">尚無專家評分</div>`;
+                html += `<div class="text-xs text-gray-400 px-4 py-2 italic">尚無專家評分</div>`;
             }
-
+            html += `</div>`;
+            
             nav.innerHTML = html;
+
+            // 恢復選中狀態
+            if(currentActiveId) {
+                const btn = document.getElementById(currentActiveId);
+                if(btn) btn.classList.add('bg-indigo-50', 'text-indigo-600', 'font-bold');
+            }
         }
 
+        // --- 🟢 修復後的新增專家邏輯 ---
         window.addNewExpert = async () => {
-            const name = prompt("請輸入專家姓名：", "專家 " + (Math.floor(Math.random()*100)));
+            const name = prompt("請輸入專家姓名：", "評審老師");
             if (!name) return;
             
             const key = document.getElementById('modalKey').value;
             const newExpertId = "exp_" + Date.now();
+            const groupType = window.currentDataMap[key].groupType;
             
-            // 建立空白評分表
+            // 1. 自動初始化向度分數結構 (這是之前漏掉的關鍵！)
+            let initDimensions = {};
+            DIMENSIONS_CONFIG[groupType].forEach(dim => {
+                initDimensions[dim.id] = { score: 0, comment: "" };
+            });
+
             const emptyReview = {
                 name: name,
                 total_score: 0,
                 comment: "",
-                dimensions: {}
+                dimensions: initDimensions // 👈 預先填入結構，避免 UI 報錯
             };
             
-            // 寫入 Firebase
+            // 2. 寫入 Firebase
             await update(ref(db, `evaluations/${key}/human_evaluations/${newExpertId}`), emptyReview);
-            // Firebase 監聽會自動更新 UI，我們稍微等一下切換過去
-            setTimeout(() => switchTab(`human-${newExpertId}`), 500);
+            
+            // 3. 自動切換到該專家分頁
+            // 我們稍微延遲一下讓 Firebase 同步
+            setTimeout(() => {
+                switchTab(`human-${newExpertId}`);
+            }, 300);
         };
 
-        window.switchTab = (tabId) => {
-            // 更新按鈕樣式
-            document.querySelectorAll('#modalNav button').forEach(b => b.classList.remove('bg-indigo-50', 'text-indigo-600', 'border-r-4', 'border-indigo-600'));
-            const activeBtn = document.getElementById(`btn-${tabId}`);
-            if(activeBtn) activeBtn.classList.add('bg-indigo-50', 'text-indigo-600', 'border-r-4', 'border-indigo-600');
+        window.switchTab = (tabId, updateUI = true) => {
+            if (updateUI) {
+                document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('bg-indigo-50', 'text-indigo-600', 'font-bold'));
+                const btn = document.getElementById(`btn-${tabId}`);
+                if (btn) btn.classList.add('bg-indigo-50', 'text-indigo-600', 'font-bold');
+            }
 
             const container = document.getElementById('tabContent');
-            const data = window.activeModalData;
+            const data = window.currentDataMap[window.activeModalKey];
 
             if (tabId === 'summary') {
                 renderSummary(data, container);
             } else if (tabId.startsWith('ai-')) {
                 const idx = parseInt(tabId.split('-')[1]);
-                renderReviewDetail(data.ai_details[idx], container, true); // true = read only
+                renderReviewDetail(data.ai_details[idx], container, true);
             } else if (tabId.startsWith('human-')) {
                 const hId = tabId.split('-')[1];
+                // 這裡現在一定會有 dimensions 資料，因為我們在 addNewExpert 裡初始化了
                 renderHumanEditor(hId, data.human_evaluations[hId], data.groupType, container);
             }
         };
 
-        // --- 渲染內容區塊 ---
-        
         function renderSummary(data, container) {
             container.innerHTML = `
-                <div class="p-6">
-                    <h2 class="text-2xl font-bold mb-4">評測總覽</h2>
-                    <div class="bg-indigo-50 p-4 rounded-xl mb-6">
-                        <p class="text-indigo-800 font-bold">AI 觀點一致性分析</p>
-                        <p class="text-sm text-gray-600">標準差 ${data.ai_std_dev} - ${data.ai_std_dev < 5 ? "AI 意見高度一致，評分參考價值高。" : "AI 意見分歧，建議詳細閱讀各別評語。"}</p>
+                <div class="p-8 max-w-4xl mx-auto">
+                    <div class="mb-8 text-center">
+                        <div class="inline-block bg-indigo-100 text-indigo-600 px-4 py-1 rounded-full text-sm font-bold mb-2">AI Consensus Analysis</div>
+                        <h2 class="text-3xl font-bold text-slate-800">評測總結報告</h2>
+                        <p class="text-slate-500 mt-2">標準差 ${data.ai_std_dev} · 共有 ${data.ai_scores.length} 位 AI 參與評分</p>
                     </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    
+                    <div class="grid grid-cols-1 gap-4">
                         ${data.ai_details.map((a,i) => `
-                            <div class="border p-4 rounded-lg bg-white shadow-sm">
-                                <div class="font-bold text-gray-700 mb-2">AI #${i+1} : ${a.total_score}分</div>
-                                <p class="text-sm text-gray-500 line-clamp-3">${a.overall_feedback}</p>
+                            <div class="bg-white border border-gray-100 p-5 rounded-xl shadow-sm hover:shadow-md transition">
+                                <div class="flex items-center gap-3 mb-3">
+                                    <div class="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold text-sm">#${i+1}</div>
+                                    <div class="font-bold text-slate-700">AI 評審意見</div>
+                                    <div class="ml-auto text-xl font-extrabold text-slate-800">${a.total_score}<span class="text-xs text-gray-400 font-normal ml-1">分</span></div>
+                                </div>
+                                <p class="text-slate-600 text-sm leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100">${a.overall_feedback}</p>
                             </div>
                         `).join('')}
                     </div>
@@ -302,65 +386,91 @@
         }
 
         function renderReviewDetail(reviewData, container, readOnly) {
-            if (!reviewData) return;
             let dimsHtml = '';
-            
-            // 處理向度顯示
-            if (reviewData.dimensions) {
-                // 如果是 AI 資料，結構可能是 { dimKey: {score, comment} }
-                // 如果是 Human 資料，結構相同
-                Object.entries(reviewData.dimensions).forEach(([key, val]) => {
-                    // 嘗試找中文名稱
-                    const groupType = window.activeModalData.groupType;
-                    const dimConfig = DIMENSIONS_CONFIG[groupType].find(d => d.id === key) || { name: key, max: 20 };
-                    
-                    const percent = (val.score / dimConfig.max) * 100;
-                    const color = percent > 80 ? 'bg-green-500' : (percent > 60 ? 'bg-yellow-500' : 'bg-red-500');
+            const groupType = window.currentDataMap[window.activeModalKey].groupType;
+            const config = DIMENSIONS_CONFIG[groupType];
 
-                    dimsHtml += `
-                        <div class="mb-4 bg-white p-4 rounded border border-gray-100">
-                            <div class="flex justify-between mb-1">
-                                <span class="font-bold text-gray-700">${dimConfig.name}</span>
-                                <span class="font-bold text-indigo-600">${val.score} <span class="text-xs text-gray-400">/ ${dimConfig.max}</span></span>
-                            </div>
-                            <div class="w-full bg-gray-100 rounded-full h-2 mb-2"><div class="${color} h-2 rounded-full" style="width: ${percent}%"></div></div>
-                            <p class="text-sm text-gray-600">${val.comment || "無評語"}</p>
+            // 確保有資料，避免 AI 偶爾回傳空
+            const dims = reviewData.dimensions || {};
+            
+            config.forEach(dimCfg => {
+                const val = dims[dimCfg.id] || { score: 0, comment: "無評語" };
+                const percent = (val.score / dimCfg.max) * 100;
+                let color = 'bg-indigo-500';
+                if (percent < 60) color = 'bg-red-400';
+                else if (percent < 80) color = 'bg-yellow-400';
+                else color = 'bg-green-500';
+
+                dimsHtml += `
+                    <div class="mb-5">
+                        <div class="flex justify-between mb-1.5">
+                            <span class="text-sm font-bold text-slate-700">${dimCfg.name}</span>
+                            <span class="text-sm font-bold text-slate-900">${val.score} <span class="text-xs text-gray-400 font-normal">/ ${dimCfg.max}</span></span>
                         </div>
-                    `;
-                });
-            }
+                        <div class="w-full bg-gray-100 rounded-full h-2.5 mb-2 overflow-hidden">
+                            <div class="${color} h-2.5 rounded-full" style="width: ${percent}%"></div>
+                        </div>
+                        <p class="text-xs text-gray-500 bg-white border border-gray-100 p-2 rounded">${val.comment || "..."}</p>
+                    </div>
+                `;
+            });
 
             container.innerHTML = `
-                <div class="p-6 animate-fadeIn">
-                    <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-2xl font-bold">${reviewData.name || "AI 評審"}</h2>
-                        <div class="text-3xl font-extrabold text-indigo-600">${reviewData.total_score}分</div>
+                <div class="p-8 max-w-3xl mx-auto">
+                    <div class="flex items-center justify-between mb-6 border-b border-gray-100 pb-4">
+                        <div class="flex items-center gap-4">
+                            <div class="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-2xl text-slate-400"><i class="fas fa-robot"></i></div>
+                            <div>
+                                <h2 class="text-xl font-bold text-slate-800">評分詳情</h2>
+                                <p class="text-xs text-slate-400">AI 自動生成</p>
+                            </div>
+                        </div>
+                        <div class="text-4xl font-extrabold text-indigo-600">${reviewData.total_score}</div>
                     </div>
-                    <div class="bg-gray-50 p-4 rounded-xl mb-6 text-gray-700">${reviewData.overall_feedback || reviewData.comment || "無總評"}</div>
-                    <div>${dimsHtml}</div>
+                    
+                    <div class="bg-indigo-50 p-4 rounded-xl mb-8 border border-indigo-100">
+                        <h4 class="text-xs font-bold text-indigo-400 uppercase mb-2">總結</h4>
+                        <p class="text-indigo-900 text-sm leading-relaxed">${reviewData.overall_feedback}</p>
+                    </div>
+                    
+                    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                        ${dimsHtml}
+                    </div>
                 </div>`;
         }
 
+        // --- 🟢 人類專家編輯器 (修復版) ---
         function renderHumanEditor(expertId, expertData, groupType, container) {
             const dimsConfig = DIMENSIONS_CONFIG[groupType];
             
-            let formHtml = `<div class="space-y-4">`;
+            let formHtml = `<div class="grid grid-cols-1 gap-4">`;
             
             dimsConfig.forEach(dim => {
+                // 安全讀取，若無資料則使用預設值
                 const currentVal = expertData.dimensions?.[dim.id] || { score: 0, comment: "" };
+                
                 formHtml += `
-                    <div class="bg-white p-4 rounded border border-gray-200">
-                        <div class="flex justify-between mb-2">
-                            <label class="font-bold text-gray-700">${dim.name}</label>
-                            <span class="text-xs text-gray-400">滿分 ${dim.max}</span>
+                    <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm transition hover:border-indigo-300">
+                        <div class="flex justify-between items-center mb-3">
+                            <label class="font-bold text-slate-700 text-sm flex items-center gap-2">
+                                <span class="w-1 h-4 bg-indigo-500 rounded-full"></span>
+                                ${dim.name}
+                            </label>
+                            <span class="text-xs text-gray-400 bg-gray-50 px-2 py-1 rounded">滿分 ${dim.max}</span>
                         </div>
-                        <div class="flex gap-4 items-center">
-                            <input type="number" min="0" max="${dim.max}" value="${currentVal.score}" 
-                                onchange="updateHumanDim('${expertId}', '${dim.id}', 'score', this.value)"
-                                class="w-20 p-2 border rounded font-bold text-center focus:ring-2 ring-indigo-500 outline-none">
-                            <input type="text" value="${currentVal.comment}" 
-                                onchange="updateHumanDim('${expertId}', '${dim.id}', 'comment', this.value)"
-                                class="flex-1 p-2 border rounded focus:ring-2 ring-indigo-500 outline-none" placeholder="針對此向度的具體評語...">
+                        <div class="flex gap-4">
+                            <div class="w-24 shrink-0">
+                                <input type="number" min="0" max="${dim.max}" value="${currentVal.score}" 
+                                    onchange="updateHumanDim('${expertId}', '${dim.id}', 'score', this.value)"
+                                    class="w-full p-2 border border-gray-300 rounded-lg text-center font-bold text-lg text-indigo-600 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
+                                    placeholder="0">
+                            </div>
+                            <div class="flex-1">
+                                <input type="text" value="${currentVal.comment}" 
+                                    onchange="updateHumanDim('${expertId}', '${dim.id}', 'comment', this.value)"
+                                    class="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition" 
+                                    placeholder="請輸入評語...">
+                            </div>
                         </div>
                     </div>
                 `;
@@ -368,138 +478,155 @@
             formHtml += `</div>`;
 
             container.innerHTML = `
-                <div class="p-6 bg-slate-50 min-h-full">
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-xl font-bold text-gray-800">專家評分模式：${expertData.name}</h2>
-                        <div class="text-2xl font-bold text-indigo-600" id="human-total-${expertId}">${expertData.total_score} 分</div>
+                <div class="p-8 max-w-4xl mx-auto bg-slate-50 min-h-full">
+                    <div class="flex justify-between items-center mb-6 sticky top-0 bg-slate-50/95 backdrop-blur py-4 z-10 border-b border-slate-200">
+                        <div class="flex items-center gap-4">
+                            <div class="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-xl shadow-sm"><i class="fas fa-user-tie"></i></div>
+                            <div>
+                                <h2 class="text-xl font-bold text-slate-800">${expertData.name}</h2>
+                                <p class="text-xs text-slate-400">點擊欄位即可編輯，自動存檔</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-xs text-gray-500 uppercase font-bold">Total Score</div>
+                            <div class="text-4xl font-extrabold text-emerald-600" id="human-total-${expertId}">${expertData.total_score}</div>
+                        </div>
                     </div>
-                    <div class="mb-6">
-                        <label class="block text-xs font-bold text-gray-500 mb-1">總結評語</label>
-                        <textarea onchange="updateHumanComment('${expertId}', this.value)" class="w-full p-3 border rounded-lg h-24 focus:ring-2 ring-indigo-500 outline-none" placeholder="請輸入對此作品的整體評價...">${expertData.comment || ""}</textarea>
+
+                    <div class="mb-8 bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+                        <label class="block text-xs font-bold text-slate-400 uppercase mb-2">總評語</label>
+                        <textarea onchange="updateHumanComment('${expertId}', this.value)" class="w-full p-3 border border-gray-200 rounded-lg h-24 focus:ring-2 focus:ring-emerald-500 outline-none resize-none text-sm" placeholder="請輸入對此作品的整體評價...">${expertData.comment || ""}</textarea>
                     </div>
+                    
                     ${formHtml}
                 </div>
             `;
         }
 
-        // --- 資料更新邏輯 ---
+        // --- 資料更新邏輯 (寫入 Firebase) ---
         window.updateHumanDim = async (expertId, dimId, field, value) => {
-            const key = document.getElementById('modalKey').value;
+            const key = window.activeModalKey;
             const path = `evaluations/${key}/human_evaluations/${expertId}/dimensions/${dimId}`;
             
             let updatePayload = {};
-            updatePayload[field] = field === 'score' ? parseFloat(value) : value;
+            // 確保分數存為數字
+            updatePayload[field] = field === 'score' ? (value === '' ? 0 : parseFloat(value)) : value;
             
             await update(ref(db, path), updatePayload);
-            recalcHumanTotal(key, expertId);
+            
+            // 觸發重新計算總分
+            if (field === 'score') recalcHumanTotal(key, expertId);
         };
 
         window.updateHumanComment = async (expertId, value) => {
-            const key = document.getElementById('modalKey').value;
+            const key = window.activeModalKey;
             await update(ref(db, `evaluations/${key}/human_evaluations/${expertId}`), { comment: value });
         };
 
         async function recalcHumanTotal(key, expertId) {
-            // 由於 Firebase update 是非同步，我們簡單地讀取當前 DOM 數值或是重新 fetch 
-            // 這裡為了流暢體驗，我們重新抓一次該專家的資料
-            // 但更簡單的是：在前端加總就好，然後寫入 total_score
-            // 這裡採取前端加總寫回
-            // 注意：這裡簡化處理，實際建議用 onValue 監聽來重算
-            const groupType = window.activeModalData.groupType;
-            const dims = DIMENSIONS_CONFIG[groupType];
-            let total = 0;
-            
-            // 重新讀取 currentDataMap (它會被 onValue 自動更新) 
-            // 這裡我們直接計算 UI 上的值比較快
-            // 但為了準確，我們還是等一下 Firebase
+            // 為了 UI 即時反應，我們先在前端算一次
+            // 注意：這裡依賴 currentDataMap，因為 onValue 會很快更新它
+            // 我們稍微等 100ms 讓 Firebase round-trip 完成
             setTimeout(async () => {
-                // 這裡其實有點 tricky，因為我們剛 update 完，onValue 會觸發，
-                // update currentDataMap，然後我們再讀取它
                 const expertData = window.currentDataMap[key].human_evaluations[expertId];
+                let total = 0;
                 if(expertData.dimensions) {
-                    Object.values(expertData.dimensions).forEach(d => total += (d.score || 0));
+                    Object.values(expertData.dimensions).forEach(d => total += (parseFloat(d.score) || 0));
                 }
+                
+                // 寫回總分
                 await update(ref(db, `evaluations/${key}/human_evaluations/${expertId}`), { total_score: total });
-                // UI 更新
-                const display = document.getElementById(`human-total-${expertId}`);
-                if(display) display.innerText = total + " 分";
-            }, 500);
+            }, 200);
         }
-
-        window.closeModal = () => document.getElementById('detailModal').close();
 
     </script>
 </head>
-<body class="text-slate-800">
+<body class="text-slate-800 h-screen overflow-hidden flex flex-col">
 
-    <nav class="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-gray-200 shadow-sm">
+    <nav class="bg-white border-b border-gray-200 shadow-sm shrink-0 z-20">
         <div class="max-w-7xl mx-auto px-4 h-16 flex justify-between items-center">
             <div class="flex items-center gap-3">
-                <div class="bg-indigo-600 text-white p-2 rounded-lg"><i class="fas fa-robot text-xl"></i></div>
-                <h1 class="font-bold text-xl tracking-tight">Scratch <span class="text-indigo-600">AI 評測藝廊</span> <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded ml-2">人機協作版</span></h1>
+                <div class="bg-indigo-600 text-white p-2 rounded-lg shadow-lg shadow-indigo-200"><i class="fas fa-robot text-lg"></i></div>
+                <h1 class="font-bold text-xl tracking-tight text-slate-800">Scratch <span class="text-indigo-600">AI Judge Pro</span></h1>
             </div>
+            <div class="text-xs font-mono text-gray-400">Ver 3.1 Expert Edition</div>
         </div>
     </nav>
 
-    <main class="max-w-7xl mx-auto px-4 py-8">
+    <div class="flex flex-1 overflow-hidden max-w-7xl mx-auto w-full">
         
-        <div class="mb-10">
-            <div id="uploadArea" class="glass-card rounded-2xl p-6 border-2 border-dashed border-gray-300 transition-all duration-300 hover:border-indigo-400 group flex flex-col md:flex-row items-center gap-6">
-                
-                <div onclick="triggerFileUpload()" class="flex-shrink-0 bg-indigo-50 text-indigo-500 w-16 h-16 rounded-full flex items-center justify-center group-hover:scale-110 transition cursor-pointer">
-                    <i id="uploadIcon" class="fas fa-cloud-upload-alt text-2xl"></i>
-                </div>
-                
-                <div class="flex-grow text-center md:text-left">
-                    <h3 class="text-lg font-bold text-gray-700">上傳 Scratch 作品 (.sb3)</h3>
-                    <p class="text-sm text-gray-500" id="fileNameDisplay">點擊左側圖示選擇檔案，然後點擊「開始評測」</p>
-                </div>
-                
-                <div class="flex items-center gap-3 w-full md:w-auto">
-                    <select id="groupType" class="bg-white border border-gray-200 rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
-                        <option value="GAME">🎮 遊戲組</option>
-                        <option value="ANIMATION">🎬 動畫組</option>
-                    </select>
-                    <button onclick="uploadAndEvaluate()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-bold shadow-lg transition transform hover:scale-105 active:scale-95 whitespace-nowrap">
-                        開始評測
-                    </button>
+        <aside class="w-80 bg-white border-r border-gray-200 flex flex-col overflow-y-auto z-10 hidden md:flex">
+            <div class="p-6">
+                <div onclick="triggerFileUpload()" class="border-2 border-dashed border-indigo-200 bg-indigo-50/50 rounded-2xl p-6 text-center cursor-pointer hover:bg-indigo-50 hover:border-indigo-400 transition group mb-4">
+                    <i id="uploadIcon" class="fas fa-cloud-upload-alt text-4xl text-indigo-400 mb-3 group-hover:scale-110 transition"></i>
+                    <p class="text-sm font-bold text-indigo-900 mb-1">上傳作品</p>
+                    <p class="text-xs text-indigo-400" id="fileNameDisplay">支援 .sb3 格式</p>
                     <input type="file" id="fileInput" accept=".sb3" onchange="handleFileSelect(event)">
+                </div>
+
+                <div class="space-y-3">
+                    <div class="relative">
+                        <select id="groupType" class="w-full appearance-none bg-white border border-gray-200 text-gray-700 py-3 px-4 pr-8 rounded-lg leading-tight focus:outline-none focus:bg-white focus:border-indigo-500 text-sm font-bold">
+                            <option value="GAME">🎮 國小遊戲組</option>
+                            <option value="ANIMATION">🎬 國小動畫組</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                            <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+                        </div>
+                    </div>
+                    
+                    <button onclick="uploadAndEvaluate()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg shadow-indigo-200 transition transform active:scale-95 flex justify-center items-center">
+                        <i class="fas fa-bolt mr-2"></i> 開始評測
+                    </button>
+                </div>
+
+                <div id="statusArea" class="hidden mt-6 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                    <div class="flex justify-between text-xs font-bold text-indigo-600 mb-2">
+                        <span id="statusText">Processing...</span>
+                        <i class="fas fa-circle-notch fa-spin"></i>
+                    </div>
+                    <div class="h-1.5 w-full bg-gray-200 rounded-full overflow-hidden">
+                        <div id="progressBar" class="h-full bg-indigo-500 w-0 transition-all duration-300 rounded-full"></div>
+                    </div>
                 </div>
             </div>
             
-            <div id="statusArea" class="hidden mt-4 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-                <div class="flex justify-between text-xs font-bold text-indigo-600 mb-2">
-                    <span id="statusText">Processing...</span>
-                    <i class="fas fa-spinner fa-spin"></i>
-                </div>
-                <div class="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
-                    <div id="progressBar" class="h-full bg-indigo-500 w-0 transition-all duration-300 rounded-full"></div>
-                </div>
+            <div class="mt-auto p-6 border-t border-gray-100">
+                <p class="text-xs text-gray-400 text-center">Powered by Gemini 1.5 Flash</p>
             </div>
-        </div>
+        </aside>
 
-        <div id="galleryGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-20"></div>
+        <main class="flex-1 bg-slate-50/50 p-6 overflow-y-auto relative" id="mainContent">
+            <div class="flex items-center justify-between mb-6">
+                <h2 class="text-xl font-bold text-slate-800">最新評測結果</h2>
+                <div class="text-xs text-gray-500 bg-white px-3 py-1 rounded-full border border-gray-200 shadow-sm">Realtime Sync Active</div>
+            </div>
+            
+            <div id="galleryGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 pb-20">
+                </div>
+        </main>
 
-    </main>
+    </div>
 
-    <dialog id="detailModal" class="bg-transparent p-0 w-full max-w-6xl h-[90vh] rounded-2xl shadow-2xl backdrop:bg-gray-900/50">
-        <div class="bg-white h-full flex flex-col rounded-2xl overflow-hidden">
-            <div class="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
-                <h2 class="text-xl font-bold pl-2" id="modalTitle">作品標題</h2>
-                <button onclick="closeModal()" class="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center transition"><i class="fas fa-times"></i></button>
+    <dialog id="detailModal" class="bg-transparent p-0 w-full max-w-[90vw] h-[85vh] rounded-2xl shadow-2xl backdrop:bg-gray-900/60 outline-none">
+        <div class="bg-white h-full flex flex-col rounded-2xl overflow-hidden shadow-2xl">
+            <div class="bg-slate-900 text-white px-6 py-4 flex justify-between items-center shrink-0 border-b border-slate-700">
+                <div class="flex items-center gap-4">
+                    <h2 class="text-lg font-bold" id="modalTitle">Project Title</h2>
+                    <span class="text-xs bg-slate-700 text-slate-300 px-2 py-1 rounded">ID: <span id="modalKeyDisplay" class="font-mono">...</span></span>
+                </div>
+                <button onclick="closeModal()" class="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center transition text-slate-300 hover:text-white"><i class="fas fa-times"></i></button>
                 <input type="hidden" id="modalKey">
             </div>
 
             <div class="flex flex-1 overflow-hidden">
-                <div class="w-64 bg-gray-50 border-r border-gray-200 p-4 overflow-y-auto shrink-0 flex flex-col" id="modalNav">
+                <div class="w-72 bg-gray-50 border-r border-gray-200 p-4 overflow-y-auto shrink-0 flex flex-col" id="modalNav">
                     </div>
-
-                <div class="flex-1 overflow-y-auto" id="tabContent">
+                <div class="flex-1 overflow-y-auto bg-white relative" id="tabContent">
                     </div>
             </div>
         </div>
     </dialog>
 
-    <style>.animate-fadeIn { animation: fadeIn 0.4s ease-out; } @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }</style>
 </body>
 </html>
