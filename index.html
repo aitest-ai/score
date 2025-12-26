@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scratch AI 評測中控台 (RTDB版)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body { font-family: 'Noto Sans TC', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        input[type="file"] { display: none; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        // 🔹 這裡改用 Realtime Database 的函式
+        import { getDatabase, ref as dbRef, push, set, onValue, update, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+        import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js";
+
+        // 🔴 請填入你的 Firebase Config
+        const firebaseConfig = {
+              apiKey: "AIzaSyDe9Ab7oAzWgooCB3QY69YTHyvLJpuCGGE",
+              authDomain: "score-a97d2.firebaseapp.com",
+              projectId: "score-a97d2",
+              storageBucket: "score-a97d2.firebasestorage.app",
+              messagingSenderId: "948644087844",
+              appId: "1:948644087844:web:c67cdeee7d066a706bb0b1",
+              measurementId: "G-N42YQDS7K0"
+        };
+
+        // 🔴 GAS 發布網址 (後端邏輯不變，因為我們只傳 JSON)
+        const GAS_API_URL = "https://script.google.com/macros/s/AKfycbwR9xsV-PD_A2jZM19x7MZsFFmr3_W_T5BSW7yzehBo7TNQqpZY80q7P5QYMslLcTmPwA/exec"; 
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app); // 初始化 Realtime Database
+        const storage = getStorage(app);
+
+        // UI Helper Functions (與之前相同)
+        const setStatus = (state, msg) => {
+            const statusDiv = document.getElementById('statusArea');
+            const statusText = document.getElementById('statusText');
+            const progressBar = document.getElementById('progressBar');
+            
+            statusDiv.classList.remove('hidden');
+            statusText.innerText = msg;
+
+            if (state === 'loading') {
+                progressBar.classList.remove('w-0');
+                progressBar.classList.add('w-full');
+                progressBar.classList.add('animate-pulse');
+            } else if (state === 'done') {
+                progressBar.classList.remove('animate-pulse');
+                setTimeout(() => { statusDiv.classList.add('hidden'); progressBar.classList.remove('w-full'); progressBar.classList.add('w-0'); }, 3000);
+            }
+        };
+
+        window.handleFileSelect = (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                document.getElementById('fileNameDisplay').innerText = file.name;
+                document.getElementById('uploadIcon').classList.replace('fa-cloud-upload-alt', 'fa-file-code');
+                document.getElementById('uploadText').innerText = "已選擇檔案，準備上傳";
+            }
+        };
+
+        // 上傳與評分邏輯
+        window.uploadAndEvaluate = async () => {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            if (!file) return alert("請先拖放或選擇一個 .sb3 檔案");
+
+            setStatus('loading', '正在上傳至雲端儲存空間...');
+
+            try {
+                // 1. Storage Upload (這部分不變)
+                const sRef = storageRef(storage, 'scratch_projects/' + file.name + '_' + Date.now());
+                await uploadBytes(sRef, file);
+                const downloadURL = await getDownloadURL(sRef);
+
+                setStatus('loading', '呼叫 5 位 AI 評審進行並行運算 (約需 15-30 秒)...');
+
+                // 2. GAS API Call
+                const response = await fetch(GAS_API_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        fileUrl: downloadURL,
+                        fileName: file.name,
+                        groupType: document.getElementById('groupType').value
+                    })
+                });
+                const result = await response.json();
+
+                if (result.status === "success") {
+                    // 🔹 3. 寫入 Realtime Database
+                    // 建立一個新的 Reference (相當於 Collection 中的 Document)
+                    const evaluationsRef = dbRef(db, 'evaluations');
+                    const newPostRef = push(evaluationsRef); 
+                    
+                    await set(newPostRef, {
+                        ...result,
+                        human_score: null,
+                        human_consistency: null,
+                        createdAt: Date.now() // 使用 Timestamp 方便排序
+                    });
+
+                    setStatus('done', '評分完成！數據已寫入儀表板');
+                } else {
+                    throw new Error(result.message);
+                }
+            } catch (error) {
+                setStatus('error', '發生錯誤: ' + error.message);
+                alert('錯誤: ' + error.message);
+            }
+        };
+
+        // 🔹 即時監聽邏輯 (Realtime Database Version)
+        const tableBody = document.getElementById('tableBody');
+        // 查詢最近 20 筆資料，依照 createdAt 排序
+        const recentPostsQuery = query(dbRef(db, 'evaluations'), orderByChild('createdAt'), limitToLast(20));
+        
+        onValue(recentPostsQuery, (snapshot) => {
+            tableBody.innerHTML = "";
+            const dataList = [];
+
+            // RTDB 的 forEach 是依照 Key 順序 (也就是時間舊到新)
+            snapshot.forEach((childSnapshot) => {
+                dataList.push({
+                    id: childSnapshot.key,
+                    ...childSnapshot.val()
+                });
+            });
+
+            // 我們需要反轉陣列，讓最新的在最上面
+            dataList.reverse().forEach(data => {
+                // --- 以下 UI 生成邏輯與之前完全相同 ---
+                
+                // 一致性徽章
+                let consistencyBadge = `<span class="px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-500">等待專家</span>`;
+                if (data.human_score !== null && data.human_score !== undefined) {
+                    const diff = Math.abs(data.ai_average - data.human_score);
+                    if (diff <= 5) consistencyBadge = `<span class="px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200"><i class="fas fa-check-circle mr-1"></i>極高一致</span>`;
+                    else if (diff <= 15) consistencyBadge = `<span class="px-3 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700 border border-yellow-200"><i class="fas fa-exclamation-circle mr-1"></i>尚可</span>`;
+                    else consistencyBadge = `<span class="px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700 border border-red-200"><i class="fas fa-times-circle mr-1"></i>分歧</span>`;
+                }
+
+                const sdColor = data.ai_std_dev < 3 ? "text-green-600" : (data.ai_std_dev < 8 ? "text-yellow-600" : "text-red-500");
+
+                const scoreBubbles = data.ai_scores.map(s => 
+                    `<div class="w-8 h-8 flex items-center justify-center rounded-full bg-blue-50 text-blue-600 text-xs font-bold border border-blue-100" title="AI Agent">${s}</div>`
+                ).join('');
+
+                const row = `
+                    <tr class="hover:bg-gray-50 transition duration-150 group">
+                        <td class="p-4">
+                            <div class="flex items-center">
+                                <div class="w-10 h-10 rounded-lg bg-orange-100 text-orange-500 flex items-center justify-center text-xl mr-3">
+                                    <i class="fab fa-scratch"></i>
+                                </div>
+                                <div>
+                                    <div class="font-bold text-gray-800">${data.fileName}</div>
+                                    <div class="text-xs text-gray-500">${new Date(data.createdAt).toLocaleTimeString()}</div>
+                                </div>
+                            </div>
+                        </td>
+                        <td class="p-4">
+                            <div class="flex space-x-1">${scoreBubbles}</div>
+                        </td>
+                        <td class="p-4">
+                            <div class="text-2xl font-bold text-gray-800">${data.ai_average.toFixed(1)}</div>
+                        </td>
+                        <td class="p-4">
+                            <div class="font-mono text-sm font-bold ${sdColor}">SD: ${data.ai_std_dev.toFixed(2)}</div>
+                            <div class="text-xs text-gray-400">內部離散度</div>
+                        </td>
+                        <td class="p-4">
+                            <div class="relative">
+                                <input type="number" value="${data.human_score || ''}" 
+                                    onchange="updateHumanScore('${data.id}', this.value, ${data.ai_average})"
+                                    class="w-24 pl-3 pr-2 py-2 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none font-bold text-gray-700 transition" 
+                                    placeholder="-">
+                                <div class="absolute right-3 top-2.5 text-gray-400 text-xs pointer-events-none">分</div>
+                            </div>
+                        </td>
+                        <td class="p-4">
+                            ${consistencyBadge}
+                        </td>
+                    </tr>
+                `;
+                tableBody.insertAdjacentHTML('beforeend', row);
+            });
+        });
+
+        // 🔹 更新人類分數 (Realtime Database Version)
+        window.updateHumanScore = async (key, score, aiAvg) => {
+            if (!score) return;
+            const numScore = parseFloat(score);
+            const diff = Math.abs(numScore - aiAvg);
+            
+            // 使用 update 更新指定路徑的特定欄位
+            const postRef = dbRef(db, 'evaluations/' + key);
+            await update(postRef, {
+                human_score: numScore,
+                human_consistency: diff
+            });
+        };
+    </script>
+</head>
+<body class="bg-slate-50 min-h-screen">
+
+    <nav class="bg-white shadow-sm border-b border-gray-200 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <i class="fas fa-robot text-indigo-600 text-2xl mr-3"></i>
+                    <span class="font-bold text-xl text-gray-800 tracking-tight">Scratch <span class="text-indigo-600">AI Judge</span> (RTDB)</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        
+        <div class="text-center mb-10">
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">作品評測中心</h1>
+            <p class="text-lg text-gray-600">Realtime Database 版本：上傳 .sb3 檔案，讓 5 位 AI 評審進行圖靈測試級別的一致性分析</p>
+        </div>
+
+        <div class="glass-panel rounded-2xl shadow-xl overflow-hidden mb-12 transform transition hover:scale-[1.01] duration-300">
+            <div class="p-8 md:p-12">
+                <div class="grid md:grid-cols-2 gap-10 items-center">
+                    
+                    <div>
+                        <label for="fileInput" class="flex flex-col items-center justify-center w-full h-64 border-2 border-indigo-200 border-dashed rounded-2xl cursor-pointer bg-indigo-50 hover:bg-indigo-100 transition duration-300 group">
+                            <div class="flex flex-col items-center justify-center pt-5 pb-6">
+                                <i id="uploadIcon" class="fas fa-cloud-upload-alt text-5xl text-indigo-400 mb-4 group-hover:scale-110 transition duration-300"></i>
+                                <p class="mb-2 text-lg text-gray-700 font-bold" id="fileNameDisplay">點擊或拖放檔案至此</p>
+                                <p class="text-sm text-gray-500" id="uploadText">支援格式: .sb3 (Scratch 3.0)</p>
+                            </div>
+                            <input id="fileInput" type="file" accept=".sb3" onchange="handleFileSelect(event)" />
+                        </label>
+                    </div>
+
+                    <div class="space-y-6">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">選擇評分組別</label>
+                            <select id="groupType" class="block w-full pl-3 pr-10 py-3 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-lg bg-white shadow-sm border">
+                                <option value="GAME">🎮 國小遊戲組 (Game)</option>
+                                <option value="ANIMATION">🎬 國小動畫組 (Animation)</option>
+                            </select>
+                        </div>
+
+                        <button onclick="uploadAndEvaluate()" class="w-full flex justify-center items-center py-4 px-4 border border-transparent rounded-xl shadow-sm text-lg font-medium text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition shadow-lg hover:shadow-xl transform active:scale-95">
+                            <i class="fas fa-play-circle mr-2"></i> 啟動 AI 評審團
+                        </button>
+
+                        <div id="statusArea" class="hidden">
+                            <div class="flex justify-between mb-1">
+                                <span class="text-sm font-medium text-indigo-700" id="statusText">準備中...</span>
+                                <span class="text-sm font-medium text-indigo-700"><i class="fas fa-cog fa-spin"></i> Processing</span>
+                            </div>
+                            <div class="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
+                                <div id="progressBar" class="bg-indigo-600 h-2.5 rounded-full w-0 transition-all duration-500"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white rounded-2xl shadow-lg overflow-hidden border border-gray-100">
+            <div class="px-6 py-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
+                <h3 class="text-lg leading-6 font-bold text-gray-900">
+                    <i class="fas fa-chart-line mr-2 text-indigo-500"></i>評分監控面板
+                </h3>
+                <span class="text-xs text-gray-400 bg-white px-2 py-1 rounded border">RTDB Real-time Sync</span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">作品資訊</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">5位 AI 原始分</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AI 平均</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">內部標準差 (SD)</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">人類專家評分</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">人機一致性</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody" class="bg-white divide-y divide-gray-200">
+                        </tbody>
+                </table>
+            </div>
+        </div>
+
+    </main>
+
+    <footer class="bg-white border-t border-gray-200 mt-12 py-8">
+        <div class="max-w-7xl mx-auto px-4 text-center text-gray-400 text-sm">
+            <p>&copy; 2025 AI Education Lab. Powered by Gemini Pro & Firebase Realtime Database.</p>
+        </div>
+    </footer>
+
+</body>
+</html>
